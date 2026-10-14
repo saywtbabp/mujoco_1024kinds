@@ -1,0 +1,2 @@
+# Present in the existing G:\anaconda3\envs\mujoco environment.
+Pillow==11.3.0

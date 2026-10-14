@@ -1,0 +1,54 @@
+# Python bytecode, virtual environments and local tool caches.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.egg-info/
+/build/
+/dist/
+
+# Local IDE configuration, secrets and OS metadata.
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+!.env.sample
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Simulation libraries, continuations, run evidence and reports.
+/results/
+/results_*/
+/results-*/
+/output/
+/outputs/
+
+# render_preview.py exports; the model sources remain in models/ and navlab/.
+/scene.xml
+/scene_preview.png
+
+# Logs, editor backups and temporary files.
+*.log
+MUJOCO_LOG.TXT
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+/tmp/
+/temp/
+
+# Retain research/test/report source, JSON experiment settings and all models/.

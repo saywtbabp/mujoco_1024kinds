@@ -1,0 +1,6 @@
+# Keep source bytes stable for experiment and candidate-library signatures.
+* text=auto eol=lf
+
+# Preserve the existing CRLF documentation in the original working directory.
+/README.md text eol=crlf
+/VALIDATION.md text eol=crlf

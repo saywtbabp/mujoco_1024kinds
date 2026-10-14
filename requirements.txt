@@ -1,0 +1,4 @@
+# The existing G:\anaconda3\envs\mujoco environment already has these.
+# Python 3.9.25; no SciPy, matplotlib, PyTorch or pytest required.
+mujoco==3.3.2
+numpy==2.0.2

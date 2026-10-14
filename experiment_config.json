@@ -1,0 +1,9 @@
+{
+  "model_source": "Mujoco_0",
+  "sobol_power": 10,
+  "inertia_min": 0.05,
+  "inertia_max": 0.80,
+  "friction_min": 0.01,
+  "friction_max": 8.0,
+  "workers": 4
+}
