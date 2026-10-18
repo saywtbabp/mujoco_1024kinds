@@ -4,7 +4,7 @@ Only reset/clone initializes qpos. No kinematic dragging, hinge motor, applied
 door torque or teleportation is used during Probe or either navigation route.
 Stage 1 uses ideal proprioception and ideal contact/door-angle instruments.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import xml.etree.ElementTree as ET
 from . import runtime
@@ -24,6 +24,33 @@ def clip_norm(x, limit):
 
 class FlightFailure(Exception):
     """A valid physical rollout left the declared fixed-height navigation envelope."""
+
+
+class NumericalFailure(RuntimeError):
+    """Invalid simulation: never interpret this as a physically resistant door."""
+
+
+def bounded_allocation(mixer, limits, thrust, torque):
+    """Preserve feasible requests; otherwise collective, roll/pitch, then yaw.
+
+    Scaling each differential as a group preserves its direction. Independent
+    motor clipping would change both collective and the requested attitude moment.
+    """
+    raw = mixer @ np.r_[thrust, torque]
+    low, high = limits[:, 0], limits[:, 1]
+    if np.all(raw >= low) and np.all(raw <= high):
+        return raw
+    collective = mixer[:, 0]
+    if np.any(collective <= 0):
+        raise ValueError("collective mixer must have positive motor coefficients")
+    thrust = float(np.clip(thrust, np.max(low/collective), np.min(high/collective)))
+    motors = collective*thrust
+    for differential in (mixer[:, 1:3] @ torque[:2], mixer[:, 3]*torque[2]):
+        positive, negative = differential > 0, differential < 0
+        scale = min(1., float(np.min((high[positive]-motors[positive])/differential[positive], initial=1.)),
+                    float(np.min((low[negative]-motors[negative])/differential[negative], initial=1.)))
+        motors += max(0., scale)*differential
+    return motors
 
 
 def scene_xml(spec, cfg):
@@ -68,6 +95,10 @@ class RouteResult:
     final_position: list
     final_speed: float
     final_angle: float
+    elapsed_time: float = 0.  # actual simulated time even when objective time is +inf
+    failure_category: str = ""
+    phase_times: dict = field(default_factory=dict)
+    recovery: dict = field(default_factory=dict)
 
 
 class World:
@@ -108,6 +139,8 @@ class World:
         self.yaw_reference = self.yaw_target = 0.
         self.step_count = 0
         self.ctrl = np.zeros(4)
+        self.recovery_status = {}
+        self.phase_times = {}
         self.reset((cfg.inertia_min,cfg.friction_min))
 
     def set_parameters(self, theta):
@@ -141,6 +174,8 @@ class World:
         self.step_count = 0
         self.force = self.wall_force = 0.
         self.route_contact_peak = self.route_wall_peak = 0.
+        self.recovery_status = {}
+        self.phase_times = {}
 
     def snapshot(self):
         mujoco.mj_forward(self.model,self.data)
@@ -159,6 +194,8 @@ class World:
         self.step_count = 0
         self.force = self.wall_force = 0.
         self.route_contact_peak = self.route_wall_peak = 0.
+        self.recovery_status = {}
+        self.phase_times = {}
         mujoco.mj_forward(self.model,self.data)
 
     def observed(self):
@@ -190,6 +227,11 @@ class World:
         authority = 1.6 if self.stage == "BACKOFF" else 1.
         torque = -np.array([.65*authority,.65*authority,.35])*er-np.array([.10,.10,.08])*gyro
         thrust = max(0.,float(force@R[:,2]))
+        if self.stage == "BACKOFF":
+            # Projection loses vertical support while tilted. Recover altitude
+            # through the existing z feedback, with a bounded tilt compensation.
+            thrust = max(0.,float(force[2])/max(float(R[2,2]),.35))
+            return bounded_allocation(self.mixer,self.limits,thrust,torque)
         return np.clip(self.mixer@np.r_[thrust,torque],self.limits[:,0],self.limits[:,1])
 
     def step(self, horizontal=None, yaw=None):
@@ -220,8 +262,9 @@ class World:
         self.step_count += 1
         if self.step_count % 25 == 0:
             pos,vel,R,_ = self.observed()
-            if np.any(d.warning.number) or not np.all(np.isfinite(d.qpos)):
-                raise RuntimeError("MuJoCo numerical warning; world is invalid, not a physical failure")
+            if (np.any(d.warning.number) or not np.all(np.isfinite(d.qpos))
+                    or not np.all(np.isfinite(d.qvel)) or not np.all(np.isfinite(d.ctrl))):
+                raise NumericalFailure("MuJoCo numerical warning; world is invalid, not a physical failure")
             if pos[2] < .5 or pos[2] > 2.3:
                 raise FlightFailure("drone left flight-height envelope: " + str(pos))
             if self.trace is not None:
@@ -310,11 +353,69 @@ class World:
             point[1] = min(point[1],.60)
         else:
             point[0] = max(point[0],self.spec.approach[0])
+        point[2] = 1.25
         self.target = point
-        self.yaw_target = 0.
-        end = self.data.time+2.5
-        while self.data.time < end-1e-10:
+        # Keep the existing heading initially: recovery need not turn to route yaw.
+        R = self.observed()[2]
+        self.yaw_target = math.atan2(R[1,0],R[0,0])
+        start = float(self.data.time)
+        dwell = 0.
+        stable_since = None
+        while self.data.time-start < self.cfg.recovery_timeout-1e-10:
             self.step()
+            pos,vel,R,gyro = self.observed()
+            stable = (self.force <= self.cfg.recovery_contact_max and self.wall_force <= self.cfg.recovery_contact_max
+                      and R[2,2] >= math.cos(math.radians(self.cfg.recovery_tilt_deg))
+                      and np.linalg.norm(gyro) <= self.cfg.recovery_gyro_max
+                      and np.linalg.norm(vel) <= self.cfg.recovery_speed_max
+                      and abs(pos[2]-1.25) <= self.cfg.recovery_height_tolerance)
+            if not stable:
+                stable_since = None
+            elif stable_since is None:
+                stable_since = float(self.data.time)
+            if self.step_count % 25:
+                continue
+            ready,checks,path = self.crossing_ready(bypass)
+            if not ready:
+                stable_since = None
+            dwell = float(self.data.time-stable_since) if stable_since is not None else 0.
+            self.recovery_status = dict(success=False,duration=float(self.data.time-start),
+                                        target=point.tolist(),checks=checks,dwell=dwell)
+            if dwell >= self.cfg.recovery_dwell-1e-10:
+                self.recovery_status["success"] = True
+                return path
+        return None
+
+    def crossing_ready(self, bypass=False):
+        """Measured state and unchanged planning clearance gate the FLIGHT transition."""
+        pos,vel,R,gyro = self.observed()
+        cfg = self.cfg
+        tilt = math.degrees(math.acos(float(np.clip(R[2,2],-1.,1.))))
+        checks = dict(contact_free=self.force <= cfg.recovery_contact_max and self.wall_force <= cfg.recovery_contact_max,
+                      attitude=tilt <= cfg.recovery_tilt_deg and np.linalg.norm(gyro) <= cfg.recovery_gyro_max,
+                      speed=np.linalg.norm(vel) <= cfg.recovery_speed_max,
+                      height=abs(pos[2]-1.25) <= cfg.recovery_height_tolerance,
+                      clearance=False,tilt_deg=tilt,gyro=float(np.linalg.norm(gyro)),
+                      speed_m_s=float(np.linalg.norm(vel)),door_force_N=float(self.force),
+                      wall_force_N=float(self.wall_force),position=pos.tolist())
+        path = None
+        if all(checks[k] for k in ("contact_free","attitude","speed","height")):
+            angle = float(self.data.qpos[self.qa])
+            planner = Planner(self.spec,cfg,door_angle=angle,force_door=not bypass)
+            goal = self.spec.approach if bypass else self.door_exit()
+            try:
+                path,_ = planner.plan(pos,goal)
+                if not bypass:
+                    tail,_ = planner.plan(goal,self.spec.merge)
+                    path = np.vstack((path,tail[1:]))
+                checks["clearance"] = True
+            except ValueError as exc:
+                checks["planning_reason"] = str(exc)
+        return all(checks[k] for k in ("contact_free","attitude","speed","height","clearance")),checks,path
+
+    def door_exit(self):
+        # Beyond the top wall's unchanged inflated boundary, before the common M.
+        return np.array([self.spec.merge[0],2.30+.045+self.cfg.clearance+self.cfg.grid_resolution,1.25])
 
     def route(self, kind, state, theta, prefix_time=0.):
         self.restore(state,theta)
@@ -327,41 +428,67 @@ class World:
             if old_callback:
                 old_callback(world)
         self.callback = observe
-        success,reason = False,""
+        success,reason,category = False,"",""
+        phase = "push" if kind == "door" else "recovery"
         try:
             if kind == "door":
                 if not self.push_open():
                     reason = "push timeout before required clearance angle"
-                    return self.route_result(start,prefix_time,False,reason,peak,wall)
-                self.disengage()
-                angle = float(self.data.qpos[self.qa])
-                path,_ = Planner(self.spec,self.cfg,door_angle=angle,force_door=True).plan(
-                    self.observed()[0],self.spec.merge)
+                    return self.route_result(start,prefix_time,False,reason,peak,wall,"push_timeout")
+                self.phase_times["push"] = float(self.data.time-start)
+                phase = "recovery"
+                path = self.disengage()
+                self.phase_times["recovery"] = float(self.data.time-start)-self.phase_times["push"]
+                if path is None:
+                    failed = [k for k in ("contact_free","attitude","speed","height","clearance")
+                              if not self.recovery_status.get("checks",{}).get(k,False)]
+                    return self.route_result(start,prefix_time,False,"recovery timeout: "+", ".join(failed),peak,wall,"recovery_timeout")
             elif kind == "bypass":
                 # A post-Probe state may still be in contact. Recover to the lower corridor first.
                 if float(self.data.time) > .01 and np.linalg.norm(self.observed()[0][:2]-self.spec.start[:2]) > .2:
-                    self.disengage(bypass=True)
-                    if not self.fly([self.spec.approach],settle=True):
-                        return self.route_result(start,prefix_time,False,"backoff timeout",peak,wall)
+                    path = self.disengage(bypass=True)
+                    self.phase_times["recovery"] = float(self.data.time-start)
+                    if path is None:
+                        return self.route_result(start,prefix_time,False,"recovery timeout before bypass",peak,wall,"recovery_timeout")
+                    phase = "crossing"
+                    self.yaw_target = 0.
+                    if not self.fly(path[1:],settle=True):
+                        return self.route_result(start,prefix_time,False,"flight timeout returning to approach",peak,wall,"crossing_failure")
+                phase = "planning"
                 path,_ = Planner(self.spec,self.cfg,door_angle=0.).plan(self.observed()[0],self.spec.merge)
             else:
                 raise ValueError(kind)
             self.yaw_target = 0.
+            phase = "crossing"
+            flight_start = float(self.data.time)
             success = self.fly(path[1:],settle=True)
+            self.phase_times["flight"] = float(self.data.time-flight_start)
             reason = "reached common merge state" if success else "flight timeout"
-        except (ValueError,FlightFailure) as exc:
+            category = "" if success else "crossing_failure"
+        except NumericalFailure as exc:
+            category,reason = "numerical_anomaly",str(exc)
+        except ValueError as exc:
+            category,reason = "planning_clearance_failure",str(exc)
+        except FlightFailure as exc:
+            category = "recovery_failure" if phase == "recovery" else "crossing_failure"
             reason = "physical navigation failure: " + str(exc)
         finally:
             self.callback = old_callback
-        return self.route_result(start,prefix_time,success,reason,peak,wall)
+        return self.route_result(start,prefix_time,success,reason,peak,wall,category)
 
-    def route_result(self, start, prefix, success, reason, peak, wall):
+    def route_result(self, start, prefix, success, reason, peak, wall,category=""):
         mujoco.mj_forward(self.model,self.data)
         pos,vel,_,_ = self.observed()
+        if self.stage == "PUSH" and "push" not in self.phase_times:
+            self.phase_times["push"] = float(self.data.time-start)
+        if prefix:
+            self.phase_times["prefix"] = float(prefix)
         return RouteResult(float(self.data.time-start+prefix) if success else float("inf"),
                            success,reason,float(max(peak,self.route_contact_peak)),
                            float(max(wall,self.route_wall_peak)),pos.tolist(),
-                           float(np.linalg.norm(vel)),float(self.data.qpos[self.qa]))
+                           float(np.linalg.norm(vel)),float(self.data.qpos[self.qa]),
+                           float(self.data.time-start+prefix),category,self.phase_times.copy(),
+                           self.recovery_status.copy())
 
 
 def prepare(spec,cfg):

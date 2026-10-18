@@ -2,6 +2,8 @@
 import csv
 import html
 import json
+from collections import Counter
+from pathlib import Path
 from . import runtime
 import numpy as np
 from .map import MapSpec
@@ -128,6 +130,14 @@ document.querySelectorAll('.belief-replay').forEach(panel=>{
 def write_report(output,results,library,cfg):
     n = len(library["theta"])
     cards,rows = [],[]
+    distribution = html.escape(json.dumps(dict(Counter(library["failure_category"][~library["success"]])),ensure_ascii=False))
+    audit_html = ""
+    audit_path = output/"recovery_audit.json"
+    if audit_path.exists():
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        comparison = ''.join(f'<tr><td>{html.escape(k)}</td><td>{v["before"]}</td><td>{v["after"]}</td></tr>'
+                             for k,v in audit["distributions"].items())
+        audit_html = f'<section><h2>恢复控制与保留基线对照</h2><table><tr><th>1024 世界结果</th><th>修改前</th><th>本版本</th></tr>{comparison}</table><p>支持 Door：{audit["before_door_support"]} → {audit["after_door_support"]}。标准 Probe 全库最大绝对差：{audit["probe_max_absolute_difference"]}。原成功世界变为失败：{len(audit["regressed_ids"])} 个。<a href="recovery_audit.md">详细对照</a> · <a href="recovery_audit.json">机器可读审计</a></p></section>'
     for r in results:
         folder = output/("case_"+r["case"])
         with (folder/"weights.csv").open(encoding="utf-8-sig") as stream:
@@ -140,7 +150,16 @@ def write_report(output,results,library,cfg):
         metrics = ""
         if post:
             metrics = f'<p>只更新权重：p_D={number(post["p_D_weights_only"])}, D={number(post["D_weights_only"])}。随后从统一 Probe 后状态重算标签。</p><p>归一化参数距离：{number(post["normalized_parameter_distance_prior"])} → {number(post["normalized_parameter_distance_posterior"])}；半径 0.10 内权重：{number(post["mass_radius_0_10_prior"])} → {number(post["mass_radius_0_10_posterior"])}。D 是否下降：{post["D_decreased"]}；是否明确：{post["resolved"]}。</p>'
+            with np.load(Path(r["continuation_cache"])/"continuation_costs.npz",allow_pickle=False) as remaining:
+                counts = {route:dict(Counter(remaining[route+"_category"][~remaining[route+"_success"]]))
+                          for route in ("door","bypass")}
+            metrics += f'<p>1024 个共同观测状态的剩余路线失败类别：{html.escape(json.dumps(counts,ensure_ascii=False))}。两路均失败 {post["both_routes_failed_count"]} 个，后验权重 {number(post["both_routes_failed_weight"],6)}。</p>'
             metrics += f'<details><summary>Probe 前向响应覆盖与真实观测</summary>{response_svg(library["z_hat"],r["observation"])}<p>蓝点为 1024 个预测，红十字为 z*。不同物理状态可能具有相近响应，不要求唯一参数辨识。</p></details>'
+        recovery = r["mission"].get("recovery",{})
+        if recovery:
+            c = recovery.get("checks",{})
+            metrics += f'<p>实际恢复 {number(recovery.get("duration"),3)} s；完成={recovery.get("success")}；出口门接触={number(c.get("door_force_N"),3)} N，倾角={number(c.get("tilt_deg"),2)}°，速率={number(c.get("speed_m_s"),3)} m/s，净空达标={c.get("clearance")}。阶段时间：{html.escape(str(r["mission"].get("phase_times",{})))}。</p>'
+            metrics += f'<p>完整执行的门接触峰值 {number(r["mission"]["contact_peak"],3)} N，墙接触峰值 {number(r["mission"]["wall_peak"],3)} N；接触峰值是物理碰撞响应，区别于 2.2 N 推进指令上限。</p>'
         chart = history_view(r["case"],folder,library["theta"],r["theta_truth_evaluation_only"],cfg)
         if chart is None:
             chart = scatter(library["theta"],weights,labels,r["theta_truth_evaluation_only"],cfg)
@@ -154,7 +173,8 @@ def write_report(output,results,library,cfg):
 <p>N={n}，二维 Sobol 覆盖 Θ；初始及视觉权重均为 1/N。Θ 是允许的物理参数域，不是真实门的概率分布。绿色点支持 Door，红色点支持 Bypass；圆点大小和透明度表示当前权重，十字表示仅用于评估的 θ*。悬停可读候选参数与权重。</p>
 <p>G = J_bypass^geo − J_door^geo（m）；p_D = Σ w_i y_i；D = 4p_D(1−p_D)。阈值 G≥{cfg.geometry_threshold} m 且 D≥{cfg.disagreement_threshold} 时执行一次标准 Probe。观测为峰值总法向接触力及门角变化；一致性 soft weighting 使用数值稳定实现。</p>
 <div class="scroll"><table><tr><th>Case</th><th>G / m</th><th>初始 p_D</th><th>初始 D</th><th>初始动作</th><th>最终 p_D</th><th>最终 D</th><th>最终动作</th><th>到达 M</th><th>含 Probe 时间 / s</th><th>对无 Probe oracle 的后悔 / s</th></tr>{''.join(rows)}</table></div>
-<p>时间来自原张拉结构无人机的四旋翼 MuJoCo rollout。推门超时、脱离或穿越失败记为 +∞；CSV 保留 inf，JSON 用 null 与 success=false 表示。M 统一位置、速度、朝向、角速度与稳定时间。M→G 的公共段单独执行，不计入两路线比较。</p>
+<p>时间来自原张拉结构无人机的四旋翼 MuJoCo rollout。推门、制动恢复、退离、门后安全航点和到 M 的全部执行时间计入路线。失败记为 +∞；CSV 保留 inf，JSON 用 null 与 success=false 表示，并单独保存实际 elapsed_time。M→G 公共段单独计时。</p>
+<p>本版本候选 Door 完成 {int(library['success'].sum())}/{n}；支持 Door {int(library['labels'].sum())}/{n}。失败类别：{distribution}。数值异常会阻止库用于决策。达到 {cfg.open_angle_deg}° 即转 BACKOFF，接触、姿态、速度、高度与原 {cfg.clearance} m 规划净空连续达标 {cfg.recovery_dwell} s 后才进入 FLIGHT；恢复超时 {cfg.recovery_timeout} s。</p>
 <p>首阶段假设已知建筑地图、固定高度、理想自身状态及理想接触/门角测量；未实现视觉检测网络。决策器不会读取真实 I、τ_f。两观测不保证唯一辨识参数，也不保证一次 Probe 必然降低 D。若 Probe 后仍有较大分歧，明确记录并按单次 Probe 保守绕行。</p>
-{''.join(cards)}<p>库签名：{library['signature']}。CSV 和 JSON 是主要研究数据；本报告可直接离线打开。</p><script>{REPLAY_JS}</script></html>'''
+{audit_html}{''.join(cards)}<p>库签名：{library['signature']}。CSV 和 JSON 是主要研究数据；本报告可直接离线打开。</p><script>{REPLAY_JS}</script></html>'''
     (output/"report.html").write_text(doc,encoding="utf-8")

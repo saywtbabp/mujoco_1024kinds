@@ -24,6 +24,13 @@ class Config:
     route_timeout: float = 85.0
     flight_speed: float = 0.65
     open_angle_deg: float = 75.0
+    recovery_timeout: float = 10.0
+    recovery_dwell: float = 0.15
+    recovery_contact_max: float = 0.10  # N, summed door/wall normal forces
+    recovery_tilt_deg: float = 15.0
+    recovery_gyro_max: float = 0.8     # rad/s, less strict than the common M state
+    recovery_speed_max: float = 0.35  # m/s; crossing need not start at rest
+    recovery_height_tolerance: float = 0.15
     clearance: float = 0.29
     grid_resolution: float = 0.06
     merge_position_tolerance: float = 0.08
@@ -55,7 +62,9 @@ class Config:
             if isinstance(value, (int, float)) and not math.isfinite(value):
                 raise ValueError("nonfinite config: " + name)
         for name in ("timestep", "probe_duration", "probe_force_max", "push_force_max",
-                     "push_timeout", "route_timeout", "flight_speed", "clearance",
+                     "push_timeout", "route_timeout", "recovery_timeout", "recovery_dwell",
+                     "recovery_contact_max", "recovery_tilt_deg", "recovery_gyro_max",
+                     "recovery_speed_max", "recovery_height_tolerance", "flight_speed", "clearance",
                      "grid_resolution", "merge_position_tolerance", "merge_speed_tolerance",
                      "merge_yaw_tolerance", "merge_gyro_tolerance", "merge_dwell",
                      "force_scale", "angle_scale", "alpha", "workers"):

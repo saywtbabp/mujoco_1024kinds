@@ -1,8 +1,9 @@
 """Time-matched Probe predictions without changing the physical Probe controller.
 
-Each prefix contains peak contact force SO FAR and angle change SO FAR. Existing
-terminal predictions/cost caches remain valid: World.probe and the controls are
-unchanged; a read-only callback records the same 20 Hz observations as the GUI.
+Each prefix contains peak contact force SO FAR and angle change SO FAR. A
+read-only callback records the same 20 Hz observations as the GUI. The stream
+is bound to the current full library signature; a controller version change
+requires a compatible rebuilt library even when the standard Probe is unchanged.
 """
 from concurrent.futures import ProcessPoolExecutor
 import hashlib

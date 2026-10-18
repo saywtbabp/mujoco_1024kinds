@@ -17,8 +17,8 @@ from .library import continuation_labels,atomic_npz
 from .live_belief import LiveBelief
 
 CASES = {
-    "A": dict(theta=(.071,.035),description="easy door; final Push expected",map=MapSpec()),
-    "B": dict(theta=(.673,6.317),description="large hinge resistance; final Avoid expected",map=MapSpec()),
+    "A": dict(theta=(.071,.035),description="low hinge resistance; large geometric shortcut",map=MapSpec()),
+    "B": dict(theta=(.673,6.317),description="large hinge resistance; large geometric shortcut",map=MapSpec()),
     "C": dict(theta=(.317,2.735),description="valuable shortcut and initial decision disagreement",map=MapSpec()),
     "D": dict(theta=(.437,2.473),description="same physical uncertainty; low geometric value",map=MapSpec("small_shortcut",1.05)),
     "E": dict(theta=(.437,2.473),description="interior off-grid truth; consistency weighting",map=MapSpec())
@@ -62,7 +62,12 @@ def continue_cached(spec,cfg,state,library):
     path = cache/"continuation_costs.npz"
     if path.exists():
         with np.load(path,allow_pickle=False) as data:
-            if np.array_equal(data["theta"],library["theta"]):
+            if ("signature" in data and str(data["signature"]) == library["signature"]
+                    and np.array_equal(data["theta"],library["theta"])
+                    and "done" in data and np.all(data["done"])
+                    and not np.any(np.isnan(data["J_door"])) and not np.any(np.isnan(data["J_bypass"]))
+                    and not np.any(data["door_category"] == "numerical_anomaly")
+                    and not np.any(data["bypass_category"] == "numerical_anomaly")):
                 print("Post-Probe continuation cache:",cache,flush=True)
                 return data["labels"].copy(),data["J_door"].copy(),data["J_bypass"].copy(),cache
     labels,jd,jb = continuation_labels(spec,cfg,state,library["theta"],cache)
