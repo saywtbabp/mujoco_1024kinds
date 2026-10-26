@@ -99,6 +99,7 @@ class RouteResult:
     failure_category: str = ""
     phase_times: dict = field(default_factory=dict)
     recovery: dict = field(default_factory=dict)
+    push: dict = field(default_factory=dict)
 
 
 class World:
@@ -140,6 +141,7 @@ class World:
         self.step_count = 0
         self.ctrl = np.zeros(4)
         self.recovery_status = {}
+        self.push_status = {}
         self.phase_times = {}
         self.reset((cfg.inertia_min,cfg.friction_min))
 
@@ -175,6 +177,7 @@ class World:
         self.force = self.wall_force = 0.
         self.route_contact_peak = self.route_wall_peak = 0.
         self.recovery_status = {}
+        self.push_status = {}
         self.phase_times = {}
 
     def snapshot(self):
@@ -195,6 +198,7 @@ class World:
         self.force = self.wall_force = 0.
         self.route_contact_peak = self.route_wall_peak = 0.
         self.recovery_status = {}
+        self.push_status = {}
         self.phase_times = {}
         mujoco.mj_forward(self.model,self.data)
 
@@ -207,11 +211,12 @@ class World:
 
     def control(self, horizontal=None, yaw=None):
         cfg = self.cfg
+        recovering = self.stage in ("BACKOFF", "PUSH_BRAKE")
         pos, vel, R, gyro = self.observed()
         error = self.target-pos
         v = clip_norm((4./3.2)*error[:2],cfg.flight_speed)
         acc = np.r_[3.2*(v-vel[:2]), np.clip(10.*error[2]-5.*vel[2],-4.,4.)]
-        acc[:2] = clip_norm(acc[:2],4. if self.stage == "BACKOFF" else 2.)
+        acc[:2] = clip_norm(acc[:2],4. if recovering else 2.)
         force = self.mass*(acc+np.array([0.,0.,9.81]))
         if horizontal is not None:
             force[:2] = horizontal
@@ -224,10 +229,10 @@ class World:
         desired = np.column_stack((np.cross(b2,b3),b2,b3))
         e = .5*(desired.T@R-R.T@desired)
         er = np.array([e[2,1],e[0,2],e[1,0]])
-        authority = 1.6 if self.stage == "BACKOFF" else 1.
+        authority = 1.6 if recovering else 1.
         torque = -np.array([.65*authority,.65*authority,.35])*er-np.array([.10,.10,.08])*gyro
         thrust = max(0.,float(force@R[:,2]))
-        if self.stage == "BACKOFF":
+        if recovering:
             # Projection loses vertical support while tilted. Recover altitude
             # through the existing z feedback, with a bounded tilt compensation.
             thrust = max(0.,float(force[2])/max(float(R[2,2]),.35))
@@ -324,24 +329,70 @@ class World:
         return np.array([peak,float(self.data.qpos[self.qa])-angle0]),wall_peak
 
     def push_open(self):
+        """Push, brake while the door coasts, and supplement only after it slows.
+
+        The anchor freezes on entering PUSH_BRAKE: neither the position target
+        nor the heading chases the panel. All decisions use observed motion;
+        no hidden door parameters or predicted friction enter this feedback.
+        """
         self.stage = "PUSH"
-        start = self.data.time
-        while self.data.time-start < self.cfg.push_timeout:
-            angle = float(self.data.qpos[self.qa])
-            if angle >= math.radians(self.cfg.open_angle_deg):
-                return True
-            tangent = np.array([math.cos(angle),math.sin(angle)])
-            normal = np.array([-math.sin(angle),math.cos(angle)])
-            # Follow the same nominal lever arm as the door rotates; no theta access.
-            contact = HINGE + (.225-HINGE[0])*tangent
-            pos,vel,_,_ = self.observed()
-            tangential_error = float((contact-pos[:2])@tangent)
-            tangential_force = 4.*tangential_error-3.*float(vel[:2]@tangent)
-            normal_force = self.cfg.push_force_max-1.2*float(vel[:2]@normal)
-            horizontal = clip_norm(tangential_force*tangent+max(0.,normal_force)*normal,self.cfg.push_force_max)
-            self.target = np.r_[contact-.15*normal,1.25]
-            self.step(horizontal,yaw=angle)
-        return False
+        cfg = self.cfg
+        start = float(self.data.time)
+        braking = False
+        # Arm before the early braking angle. A rollout entered later (e.g. a
+        # moving post-interaction state) must not abruptly replace an established
+        # contact push with a frozen position target. Speed hysteresis then
+        # permits another braking interval if a supplemental push accelerates it.
+        early_brake_eligible = float(self.data.qpos[self.qa]) < math.radians(cfg.push_brake_angle_deg)
+        anchor = None
+        brake_time = 0.
+        events = []
+        max_command = 0.
+        try:
+            while self.data.time-start < cfg.push_timeout:
+                angle = float(self.data.qpos[self.qa])
+                omega = float(self.data.qvel[self.da])
+                if angle >= math.radians(cfg.open_angle_deg):
+                    return True
+                pos,vel,R,_ = self.observed()
+                if early_brake_eligible and not braking and angle >= math.radians(cfg.push_brake_angle_deg) and omega >= cfg.push_brake_omega:
+                    braking = True
+                    anchor = pos.copy(); anchor[2] = 1.25
+                    self.yaw_target = math.atan2(R[1,0],R[0,0])
+                    events.append(dict(mode="brake",time_s=float(self.data.time-start),
+                        angle_deg=math.degrees(angle),omega_rad_s=omega,
+                        speed_m_s=float(np.linalg.norm(vel)),anchor=anchor.tolist()))
+                elif (braking and omega < cfg.push_resume_omega
+                      and np.linalg.norm(vel) < cfg.recovery_speed_max
+                      and R[2,2] > math.cos(math.radians(cfg.recovery_tilt_deg))):
+                    braking = False
+                    events.append(dict(mode="resume",time_s=float(self.data.time-start),
+                        angle_deg=math.degrees(angle),omega_rad_s=omega,
+                        speed_m_s=float(np.linalg.norm(vel))))
+                if braking:
+                    self.stage = "PUSH_BRAKE"
+                    self.target = anchor.copy()
+                    horizontal = clip_norm(2.*(anchor[:2]-pos[:2])-3.*vel[:2],cfg.push_force_max)
+                    self.step(horizontal)
+                    brake_time += cfg.timestep
+                else:
+                    self.stage = "PUSH"
+                    tangent = np.array([math.cos(angle),math.sin(angle)])
+                    normal = np.array([-math.sin(angle),math.cos(angle)])
+                    contact = HINGE + (.225-HINGE[0])*tangent
+                    tangential_force = 4.*float((contact-pos[:2])@tangent)-3.*float(vel[:2]@tangent)
+                    normal_force = cfg.push_force_max-1.2*float(vel[:2]@normal)
+                    horizontal = clip_norm(tangential_force*tangent+max(0.,normal_force)*normal,cfg.push_force_max)
+                    self.target = np.r_[contact-.15*normal,1.25]
+                    self.step(horizontal,yaw=angle)
+                max_command = max(max_command,float(np.linalg.norm(horizontal)))
+            return False
+        finally:
+            self.push_status = dict(duration=float(self.data.time-start),brake_time_s=brake_time,
+                early_brake_eligible=early_brake_eligible,
+                brake_count=sum(e["mode"] == "brake" for e in events),
+                resume_count=sum(e["mode"] == "resume" for e in events),
+                max_horizontal_command_N=max_command,events=events)
 
     def disengage(self, bypass=False):
         self.stage = "BACKOFF"
@@ -352,7 +403,9 @@ class World:
         if bypass:
             point[1] = min(point[1],.60)
         else:
-            point[0] = max(point[0],self.spec.approach[0])
+            # Door normal alone can put the target inside the right wall's
+            # inflated region. Use the established doorway lane's x coordinate.
+            point[0] = self.spec.approach[0]
         point[2] = 1.25
         self.target = point
         # Keep the existing heading initially: recovery need not turn to route yaw.
@@ -479,7 +532,7 @@ class World:
     def route_result(self, start, prefix, success, reason, peak, wall,category=""):
         mujoco.mj_forward(self.model,self.data)
         pos,vel,_,_ = self.observed()
-        if self.stage == "PUSH" and "push" not in self.phase_times:
+        if self.stage in ("PUSH", "PUSH_BRAKE") and "push" not in self.phase_times:
             self.phase_times["push"] = float(self.data.time-start)
         if prefix:
             self.phase_times["prefix"] = float(prefix)
@@ -488,7 +541,7 @@ class World:
                            float(max(wall,self.route_wall_peak)),pos.tolist(),
                            float(np.linalg.norm(vel)),float(self.data.qpos[self.qa]),
                            float(self.data.time-start+prefix),category,self.phase_times.copy(),
-                           self.recovery_status.copy())
+                           self.recovery_status.copy(),self.push_status.copy())
 
 
 def prepare(spec,cfg):

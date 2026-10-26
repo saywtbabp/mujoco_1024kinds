@@ -83,6 +83,8 @@ def build_library(spec,cfg,force=False):
                   failure_category=np.full(n,"",dtype="U40"),elapsed_time=np.zeros(n),
                   recovery_time=np.zeros(n),recovery_success=np.zeros(n,dtype=bool),
                   recovery_exit=np.full((n,7),np.nan),
+                  push_brake_count=np.zeros(n,dtype=int),push_resume_count=np.zeros(n,dtype=int),
+                  push_brake_time=np.zeros(n),push_command_peak=np.zeros(n),
                   probe_wall_peak=np.zeros(n),route_wall_peak=np.zeros(n),route_contact_peak=np.zeros(n),done=np.zeros(n,dtype=bool))
     if path.exists() and not force:
         with np.load(path,allow_pickle=False) as saved:
@@ -107,6 +109,10 @@ def build_library(spec,cfg,force=False):
                 arrays["failure_category"][i],arrays["elapsed_time"][i] = result.failure_category,result.elapsed_time
                 arrays["recovery_time"][i] = result.recovery.get("duration",0.)
                 arrays["recovery_success"][i] = result.recovery.get("success",False)
+                arrays["push_brake_count"][i] = result.push.get("brake_count",0)
+                arrays["push_resume_count"][i] = result.push.get("resume_count",0)
+                arrays["push_brake_time"][i] = result.push.get("brake_time_s",0.)
+                arrays["push_command_peak"][i] = result.push.get("max_horizontal_command_N",0.)
                 if result.recovery.get("checks"):
                     c = result.recovery["checks"]
                     arrays["recovery_exit"][i] = [c["door_force_N"],c["wall_force_N"],c["tilt_deg"],
@@ -130,19 +136,25 @@ def build_library(spec,cfg,force=False):
         writer.writerow(["id","I_hinge_kg_m2","tau_f_Nm","F_peak_N","Delta_theta_rad",
                          "J_door_s","J_bypass_s","y_i","door_success","door_reason",
                          "probe_wall_peak_N","route_wall_peak_N","failure_category","elapsed_s",
-                         "recovery_s","recovery_success","route_contact_peak_N"])
+                         "recovery_s","recovery_success","route_contact_peak_N",
+                         "push_brake_count","push_resume_count","push_brake_s","push_command_peak_N"])
         for i in range(n):
             writer.writerow([i,*theta[i],*arrays["z_hat"][i],arrays["J_door"][i],bypass.time,
                              labels[i],int(arrays["success"][i]),arrays["reason"][i],
                              arrays["probe_wall_peak"][i],arrays["route_wall_peak"][i],
                              arrays["failure_category"][i],arrays["elapsed_time"][i],
-                             arrays["recovery_time"][i],int(arrays["recovery_success"][i]),arrays["route_contact_peak"][i]])
+                             arrays["recovery_time"][i],int(arrays["recovery_success"][i]),arrays["route_contact_peak"][i],
+                             arrays["push_brake_count"][i],arrays["push_resume_count"][i],
+                             arrays["push_brake_time"][i],arrays["push_command_peak"][i]])
     metadata = dict(signature=key,config=asdict(cfg),map=asdict(spec),N=n,geometry=geo,
                     baseline_bypass=asdict(bypass),approach_time_s=approach_time,
                     bypass_reuse="identical no-door-contact rollout shared across physical hypotheses",
                     successful_door_worlds=int(arrays["success"].sum()),
                     door_supported_worlds=int(labels.sum()),
                     failure_categories=dict(Counter(arrays["failure_category"][~arrays["success"]])),
+                    early_braking_worlds=int(np.sum(arrays["push_brake_count"]>0)),
+                    supplemental_push_worlds=int(np.sum(arrays["push_resume_count"]>0)),
+                    push_command_peak_N=float(arrays["push_command_peak"].max()),
                     route_contact_peak_range_N=[float(arrays["route_contact_peak"].min()),float(arrays["route_contact_peak"].max())],
                     successful_time_quantiles_s=np.quantile(arrays["J_door"][arrays["success"]],[0,.5,1]).tolist() if arrays["success"].any() else [],
                     recovery_exit_columns=["door_force_N","wall_force_N","tilt_deg","gyro_rad_s","speed_m_s","height_m","clearance_ok"],
@@ -161,6 +173,9 @@ def continuation_labels(spec,cfg,state,theta,folder):
     rd,rb = np.full(n,"",dtype="U180"),np.full(n,"",dtype="U180")
     cd,cb = np.full(n,"",dtype="U40"),np.full(n,"",dtype="U40")
     ed,eb = np.zeros(n),np.zeros(n)
+    diagnostics = {name:np.zeros(n,dtype=bool if name.endswith("recovery_success") else float)
+        for name in ("door_wall_peak","bypass_wall_peak","door_recovery_success","bypass_recovery_success",
+                     "door_brake_count","door_resume_count","door_brake_time")}
     done = np.zeros(n,dtype=bool)
     key = signature(spec,cfg)
     path = folder/"continuation_costs.npz"
@@ -172,12 +187,14 @@ def continuation_labels(spec,cfg,state,theta,folder):
                                    ("door_reason",rd),("bypass_reason",rb),("door_category",cd),("bypass_category",cb),
                                    ("door_elapsed",ed),("bypass_elapsed",eb),("done",done)):
                     array[:] = saved[name]
+                for name,array in diagnostics.items():
+                    array[:] = saved[name]
                 print(f"  continuation checkpoint: {int(done.sum())}/{n}",flush=True)
     def save():
         atomic_npz(path,theta=theta,J_door=jd,J_bypass=jb,signature=np.array(key),
                    labels=(jd<jb).astype(int),door_success=sd,bypass_success=sb,
                    door_reason=rd,bypass_reason=rb,door_category=cd,bypass_category=cb,
-                   door_elapsed=ed,bypass_elapsed=eb,done=done)
+                   door_elapsed=ed,bypass_elapsed=eb,done=done,**diagnostics)
     started = time.perf_counter()
     print(f"Recomputing {n} Door/Bypass continuations from the SAME observed post-Probe state",flush=True)
     pending = [(i,theta[i]) for i in range(n) if not done[i]]
@@ -186,6 +203,12 @@ def continuation_labels(spec,cfg,state,theta,folder):
             i,door,bypass = row
             jd[i],jb[i],sd[i],sb[i],rd[i],rb[i] = door.time,bypass.time,door.success,bypass.success,door.reason,bypass.reason
             cd[i],cb[i],ed[i],eb[i] = door.failure_category,bypass.failure_category,door.elapsed_time,bypass.elapsed_time
+            for kind,result in (("door",door),("bypass",bypass)):
+                diagnostics[kind+"_wall_peak"][i] = result.wall_peak
+                diagnostics[kind+"_recovery_success"][i] = result.recovery.get("success",False)
+            diagnostics["door_brake_count"][i] = door.push.get("brake_count",0)
+            diagnostics["door_resume_count"][i] = door.push.get("resume_count",0)
+            diagnostics["door_brake_time"][i] = door.push.get("brake_time_s",0.)
             done[i] = True
             count = int(done.sum())
             if count % 32 == 0 or count == n:
@@ -200,9 +223,10 @@ def continuation_labels(spec,cfg,state,theta,folder):
         writer = csv.writer(stream)
         writer.writerow(["id","I","tau_f","J_door_remaining_s","J_bypass_remaining_s","y_i_after",
                          "door_reason","bypass_reason","door_failure_category","bypass_failure_category",
-                         "door_elapsed_s","bypass_elapsed_s"])
+                         "door_elapsed_s","bypass_elapsed_s",*diagnostics])
         for i in range(n):
-            writer.writerow([i,*theta[i],jd[i],jb[i],labels[i],rd[i],rb[i],cd[i],cb[i],ed[i],eb[i]])
+            writer.writerow([i,*theta[i],jd[i],jb[i],labels[i],rd[i],rb[i],cd[i],cb[i],ed[i],eb[i],
+                             *[array[i] for array in diagnostics.values()]])
     if np.any(cd == "numerical_anomaly") or np.any(cb == "numerical_anomaly"):
         raise RuntimeError("invalid numerical continuations preserved; refusing action labels")
     return labels,jd,jb

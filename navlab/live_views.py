@@ -8,7 +8,8 @@ import mujoco
 import numpy as np
 
 STAGES = {"RESET":"初始状态","FLIGHT":"飞行 / 穿越","PROBE":"Probe 主动接触",
-          "PUSH":"正式推门","BACKOFF":"制动 / 脱离 / 姿态恢复","DONE":"场景完成"}
+          "PUSH":"正式推门 / 补推","PUSH_BRAKE":"提前制动 / 门惯性续开",
+          "BACKOFF":"制动 / 脱离 / 姿态恢复","DONE":"场景完成"}
 PHASES = {"INITIAL":"初始等权","PROBE":"Probe 中：同一时刻的观测一致性更新",
           "PROBE_COMPLETE":"Probe 结束：最终观测一致性权重",
           "STATE_CONDITIONED":"Probe 后：使用剩余路线标签；执行期间保留权重"}

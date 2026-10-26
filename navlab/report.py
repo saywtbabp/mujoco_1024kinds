@@ -148,14 +148,21 @@ def write_report(output,results,library,cfg):
         pd,d = post.get("p_D",r["prior"]["p_D"]),post.get("D",r["prior"]["D"])
         rows.append(f'<tr><td>{r["case"]}</td><td>{number(r["geometry"]["G"],3)}</td><td>{number(r["prior"]["p_D"])}</td><td>{number(r["prior"]["D"])}</td><td>{r["prior"]["action"]}</td><td>{number(pd)}</td><td>{number(d)}</td><td>{r["final_action"]}</td><td>{r["mission_success"]}</td><td>{number(r["total_time_to_M_s"],3)}</td><td>{number(r["regret_vs_no_probe_oracle_s"],3)}</td></tr>')
         metrics = ""
+        if MapSpec(**r["map"]) != MapSpec():
+            metrics += '<p>此地图沿用大地图 Door 成本库，并实际重算本地图 Bypass；未单独完成本地图全部 1024 个 Door rollout。离开通道的碰墙轨迹可能具有不同成本，完整验证范围见项目 VALIDATION.md。</p>'
+            if r["prior"]["D"] < cfg.disagreement_threshold:
+                metrics += '<p>本次初始 D 也低于阈值，因此本场景不能单独隔离几何 G 的门控作用；没有为维持原场景作用调整标签或阈值。</p>'
         if post:
-            metrics = f'<p>只更新权重：p_D={number(post["p_D_weights_only"])}, D={number(post["D_weights_only"])}。随后从统一 Probe 后状态重算标签。</p><p>归一化参数距离：{number(post["normalized_parameter_distance_prior"])} → {number(post["normalized_parameter_distance_posterior"])}；半径 0.10 内权重：{number(post["mass_radius_0_10_prior"])} → {number(post["mass_radius_0_10_posterior"])}。D 是否下降：{post["D_decreased"]}；是否明确：{post["resolved"]}。</p>'
+            metrics += f'<p>只更新权重：p_D={number(post["p_D_weights_only"])}, D={number(post["D_weights_only"])}。随后从统一 Probe 后状态重算标签。</p><p>归一化参数距离：{number(post["normalized_parameter_distance_prior"])} → {number(post["normalized_parameter_distance_posterior"])}；半径 0.10 内权重：{number(post["mass_radius_0_10_prior"])} → {number(post["mass_radius_0_10_posterior"])}。D 是否下降：{post["D_decreased"]}；是否明确：{post["resolved"]}。</p>'
             with np.load(Path(r["continuation_cache"])/"continuation_costs.npz",allow_pickle=False) as remaining:
                 counts = {route:dict(Counter(remaining[route+"_category"][~remaining[route+"_success"]]))
                           for route in ("door","bypass")}
             metrics += f'<p>1024 个共同观测状态的剩余路线失败类别：{html.escape(json.dumps(counts,ensure_ascii=False))}。两路均失败 {post["both_routes_failed_count"]} 个，后验权重 {number(post["both_routes_failed_weight"],6)}。</p>'
             metrics += f'<details><summary>Probe 前向响应覆盖与真实观测</summary>{response_svg(library["z_hat"],r["observation"])}<p>蓝点为 1024 个预测，红十字为 z*。不同物理状态可能具有相近响应，不要求唯一参数辨识。</p></details>'
         recovery = r["mission"].get("recovery",{})
+        push = r["mission"].get("push",{})
+        if push:
+            metrics += f'<p>提前制动 {push.get("brake_count",0)} 次，门减速后补推 {push.get("resume_count",0)} 次；制动/等待计入推门的 {number(push.get("brake_time_s"),3)} s。实际水平指令峰值 {number(push.get("max_horizontal_command_N"),3)} N。</p>'
         if recovery:
             c = recovery.get("checks",{})
             metrics += f'<p>实际恢复 {number(recovery.get("duration"),3)} s；完成={recovery.get("success")}；出口门接触={number(c.get("door_force_N"),3)} N，倾角={number(c.get("tilt_deg"),2)}°，速率={number(c.get("speed_m_s"),3)} m/s，净空达标={c.get("clearance")}。阶段时间：{html.escape(str(r["mission"].get("phase_times",{})))}。</p>'
@@ -170,11 +177,12 @@ def write_report(output,results,library,cfg):
     doc = f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>1024 候选世界主动交互导航</title>
 <style>body{{max-width:1280px;margin:32px auto;padding:0 24px;font:16px/1.65 "Microsoft YaHei",system-ui;color:#0f172a;background:#f8fafc}}h1{{font-size:28px}}h2{{font-size:20px}}section{{background:white;padding:22px;margin:24px 0;border:1px solid #e2e8f0;border-radius:10px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}svg{{width:100%;background:#fff}}text{{font:12px system-ui;fill:#334155}}table{{border-collapse:collapse;width:100%;font-size:14px}}th,td{{border:1px solid #cbd5e1;padding:8px;text-align:center}}th{{background:#e2e8f0}}a{{color:#0369a1}}.scroll{{overflow:auto}}.replay-controls{{display:flex;gap:6px;flex-wrap:wrap}}button{{padding:6px 10px;border:1px solid #cbd5e1;border-radius:5px;background:#f1f5f9;cursor:pointer}}.history-status,.history-note{{font-size:12px;color:#475569}}@media(max-width:850px){{.grid{{grid-template-columns:1fr}}}}</style>
 <h1>物理候选世界 + 几何价值 G + 动作决策分歧 D</h1>
-<p>N={n}，二维 Sobol 覆盖 Θ；初始及视觉权重均为 1/N。Θ 是允许的物理参数域，不是真实门的概率分布。绿色点支持 Door，红色点支持 Bypass；圆点大小和透明度表示当前权重，十字表示仅用于评估的 θ*。悬停可读候选参数与权重。</p>
+<p>N={n}，二维 Sobol 覆盖 Θ；初始及视觉权重均为 1/N。Θ 是允许的物理参数域，不是真实门的概率分布。绿色表示 J_door &lt; J_bypass；红色包括 Door 失败或虽成功但更慢，不能直接等同于“推不动”。圆点大小和透明度表示当前权重，十字表示仅用于评估的 θ*。悬停可读候选参数与权重。</p>
 <p>G = J_bypass^geo − J_door^geo（m）；p_D = Σ w_i y_i；D = 4p_D(1−p_D)。阈值 G≥{cfg.geometry_threshold} m 且 D≥{cfg.disagreement_threshold} 时执行一次标准 Probe。观测为峰值总法向接触力及门角变化；一致性 soft weighting 使用数值稳定实现。</p>
 <div class="scroll"><table><tr><th>Case</th><th>G / m</th><th>初始 p_D</th><th>初始 D</th><th>初始动作</th><th>最终 p_D</th><th>最终 D</th><th>最终动作</th><th>到达 M</th><th>含 Probe 时间 / s</th><th>对无 Probe oracle 的后悔 / s</th></tr>{''.join(rows)}</table></div>
 <p>时间来自原张拉结构无人机的四旋翼 MuJoCo rollout。推门、制动恢复、退离、门后安全航点和到 M 的全部执行时间计入路线。失败记为 +∞；CSV 保留 inf，JSON 用 null 与 success=false 表示，并单独保存实际 elapsed_time。M→G 公共段单独计时。</p>
-<p>本版本候选 Door 完成 {int(library['success'].sum())}/{n}；支持 Door {int(library['labels'].sum())}/{n}。失败类别：{distribution}。数值异常会阻止库用于决策。达到 {cfg.open_angle_deg}° 即转 BACKOFF，接触、姿态、速度、高度与原 {cfg.clearance} m 规划净空连续达标 {cfg.recovery_dwell} s 后才进入 FLIGHT；恢复超时 {cfg.recovery_timeout} s。</p>
+<p>候选中墙接触峰值超过 0.1 N 的 ID：{np.flatnonzero(library['route_wall_peak'] > .1).tolist()}。这些物理碰撞和耗时保留在仿真及 CSV 中；到达 M 不等于全程无墙接触。</p>
+<p>本版本候选 Door 完成 {int(library['success'].sum())}/{n}；支持 Door {int(library['labels'].sum())}/{n}。失败类别：{distribution}。数值异常会阻止库用于决策。从门角小于 {cfg.push_brake_angle_deg}° 的早期状态进入时启用制动反馈：门角达到该角且转速达到 {cfg.push_brake_omega} rad/s 时冻结跟进目标、提前制动；门转慢到 {cfg.push_resume_omega} rad/s 且机体可控时补推，补推后再次加速仍可制动，用转速滞回避免抖动。执行开始时已在中途运动状态则保持连续反馈，避免晚切换。标准 Probe 不使用此规则。达到 {cfg.open_angle_deg}° 即转 BACKOFF，接触、姿态、速度、高度与原 {cfg.clearance} m 规划净空连续达标 {cfg.recovery_dwell} s 后才进入 FLIGHT；恢复超时 {cfg.recovery_timeout} s。</p>
 <p>首阶段假设已知建筑地图、固定高度、理想自身状态及理想接触/门角测量；未实现视觉检测网络。决策器不会读取真实 I、τ_f。两观测不保证唯一辨识参数，也不保证一次 Probe 必然降低 D。若 Probe 后仍有较大分歧，明确记录并按单次 Probe 保守绕行。</p>
 {audit_html}{''.join(cards)}<p>库签名：{library['signature']}。CSV 和 JSON 是主要研究数据；本报告可直接离线打开。</p><script>{REPLAY_JS}</script></html>'''
     (output/"report.html").write_text(doc,encoding="utf-8")

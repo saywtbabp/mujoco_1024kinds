@@ -21,6 +21,9 @@ class Config:
     push_force_max: float = 2.20
     probe_velocity_damping: float = 1.2
     push_timeout: float = 10.0
+    push_brake_angle_deg: float = 20.0
+    push_brake_omega: float = 0.75  # rad/s: stop chasing a fast rotating panel
+    push_resume_omega: float = 0.15 # hysteresis; supplement push when it slows
     route_timeout: float = 85.0
     flight_speed: float = 0.65
     open_angle_deg: float = 75.0
@@ -58,6 +61,10 @@ class Config:
             raise ValueError("disagreement_threshold must be in (0,1]")
         if not 0 < self.open_angle_deg < 88:
             raise ValueError("open_angle_deg must be in (0,88)")
+        if not 0 < self.push_brake_angle_deg < self.open_angle_deg:
+            raise ValueError("push brake angle must precede passage angle")
+        if not 0 < self.push_resume_omega < self.push_brake_omega:
+            raise ValueError("push angular-speed thresholds need positive hysteresis")
         for name, value in asdict(self).items():
             if isinstance(value, (int, float)) and not math.isfinite(value):
                 raise ValueError("nonfinite config: " + name)

@@ -109,6 +109,51 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(result.recovery["success"])
         self.assertEqual(result.recovery["checks"]["door_force_N"],0.)
         self.assertEqual(result.wall_peak,0.)
+        self.assertFalse(result.push["early_brake_eligible"])
+        self.assertEqual(result.push["brake_count"],0)
+
+    def test_fast_doors_brake_before_75_and_resume_if_needed(self):
+        cfg = Config()
+        world,start,approach,dt = prepare(MapSpec(),cfg)
+        theta = candidate_worlds(cfg)
+        for i in (20,312,432):
+            with self.subTest(id=i):
+                braking_targets = []
+                previous = [None,None]
+                def observe(w):
+                    if w.stage == "PUSH_BRAKE":
+                        if previous[0] == "PUSH_BRAKE":
+                            np.testing.assert_array_equal(w.target,previous[1])
+                        braking_targets.append(w.target.copy())
+                        self.assertTrue(np.all(w.ctrl >= w.limits[:,0]-1e-12))
+                        self.assertTrue(np.all(w.ctrl <= w.limits[:,1]+1e-12))
+                    previous[:] = [w.stage,w.target.copy()]
+                world.callback = observe
+                result = world.route("door",approach,theta[i],dt)
+                self.assertTrue(result.success,result.reason)
+                self.assertEqual(result.wall_peak,0.)
+                self.assertTrue(result.recovery["success"])
+                self.assertGreater(result.push["brake_count"],0)
+                self.assertGreater(result.push["resume_count"],0)
+                self.assertLess(result.push["events"][0]["angle_deg"],cfg.open_angle_deg)
+                self.assertLessEqual(result.push["max_horizontal_command_N"],2.2+1e-12)
+                self.assertTrue(braking_targets)
+                # A frozen target does not move along the rotating door arc.
+                np.testing.assert_array_equal(braking_targets[0],result.push["events"][0]["anchor"])
+                self.assertLess(result.final_speed,cfg.merge_speed_tolerance)
+
+    def test_braking_timeout_records_actual_push_time(self):
+        cfg = replace(Config(),push_timeout=1.3)
+        world,start,approach,dt = prepare(MapSpec(),cfg)
+        stages = []
+        world.callback = lambda w: stages.append(w.stage)
+        result = world.route("door",approach,[.4015625,.7590625],dt)
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure_category,"push_timeout")
+        self.assertIn("PUSH_BRAKE",stages)
+        self.assertNotIn("FLIGHT",stages)
+        self.assertAlmostEqual(result.elapsed_time,dt+result.phase_times["push"])
+        self.assertGreater(result.push["brake_time_s"],0.)
 
     def test_interrupted_continuations_resume_only_unfinished_worlds(self):
         cfg = replace(Config(),workers=1)

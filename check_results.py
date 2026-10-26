@@ -31,6 +31,16 @@ def main():
             assert str(library["signature"]) == r["library_signature"]
             assert not np.any(library["failure_category"] == "numerical_anomaly")
             np.testing.assert_array_equal(library["success"],np.isfinite(library["J_door"]))
+            successful = library["success"]
+            assert np.all(library["recovery_success"][successful])
+            exit_state = library["recovery_exit"][successful]
+            assert np.all(exit_state[:,0:2] <= cfg.recovery_contact_max)
+            assert np.all(exit_state[:,2] <= cfg.recovery_tilt_deg)
+            assert np.all(exit_state[:,3] <= cfg.recovery_gyro_max)
+            assert np.all(exit_state[:,4] <= cfg.recovery_speed_max)
+            assert np.all(abs(exit_state[:,5]-1.25) <= cfg.recovery_height_tolerance)
+            assert np.all(exit_state[:,6] == 1.)
+            assert np.all(library["push_command_peak"] <= cfg.push_force_max+1e-12)
             check_truth(r["theta_truth_evaluation_only"],library["theta"],cfg)
         with (output/("case_"+r["case"])/"weights.csv").open(encoding="utf-8-sig") as stream:
             rows = list(csv.DictReader(stream))
@@ -64,6 +74,11 @@ def main():
                 np.testing.assert_array_equal(continuation["labels"],(continuation["J_door"]<continuation["J_bypass"]).astype(int))
                 assert not np.any(continuation["door_category"] == "numerical_anomaly")
                 assert not np.any(continuation["bypass_category"] == "numerical_anomaly")
+                for kind in ("door","bypass"):
+                    ok = continuation[kind+"_success"]
+                    np.testing.assert_array_equal(ok,np.isfinite(continuation["J_"+kind]))
+                    assert np.all(continuation[kind+"_recovery_success"][ok])
+                    assert np.all(continuation[kind+"_elapsed"] > 0.)
     for case in "BCE":
         assert by_case[case]["prior"] == by_case["A"]["prior"],"same map/domain/prior cannot read truth"
     print("Completed 1024-world A-E results verified:",output)

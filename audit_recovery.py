@@ -1,5 +1,6 @@
 """Compare actual preserved and current default libraries, never infer labels from tau_f."""
 import json
+import argparse
 from collections import Counter
 from pathlib import Path
 from navlab import runtime
@@ -19,8 +20,13 @@ def old_category(reason):
 
 
 def main():
-    old_output = ROOT/"results"/"20261017_230029"
-    output = Path((ROOT/"results"/"LATEST.txt").read_text(encoding="utf-8").strip())
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--before',type=Path,default=ROOT/'results'/'20261017_230029')
+    parser.add_argument('--output',type=Path)
+    parser.add_argument('--name',default='recovery_audit')
+    args = parser.parse_args()
+    old_output = args.before.resolve()
+    output = args.output or Path((ROOT/"results"/"LATEST.txt").read_text(encoding="utf-8").strip())
     old_results = json.loads((old_output/"results.json").read_text(encoding="utf-8"))
     results = json.loads((output/"results.json").read_text(encoding="utf-8"))
     with np.load(Path(old_results[0]["library_folder"])/"hypotheses.npz") as f:
@@ -28,7 +34,8 @@ def main():
     with np.load(Path(results[0]["library_folder"])/"hypotheses.npz") as f:
         new = {k:f[k].copy() for k in f.files}
     np.testing.assert_array_equal(old["theta"],new["theta"])
-    old_c = np.array([old_category(r) for r in old["reason"]])
+    old_c = (np.where(old["success"],"success",old["failure_category"])
+             if "failure_category" in old else np.array([old_category(r) for r in old["reason"]]))
     new_c = np.where(new["success"],"success",new["failure_category"])
     categories = ["success","push_timeout","recovery_timeout","planning_clearance_failure",
                   "recovery_failure","crossing_failure","numerical_anomaly"]
@@ -57,6 +64,8 @@ def main():
         successful_time_delta_quantiles_s=np.quantile(delta,[0,.5,1]) if len(delta) else [],
         time_quantiles_s=np.quantile(new["J_door"][new["success"]],[0,.5,1]),
         wall_contact_worlds=int(np.sum(new["route_wall_peak"]>.1)),
+        early_braking_worlds=int(np.sum(new["push_brake_count"]>0)),
+        supplemental_push_worlds=int(np.sum(new["push_resume_count"]>0)),
         successful_wall_contact_worlds=int(np.sum(new["success"] & (new["route_wall_peak"]>.1))),
         cases=[dict(case=r["case"],prior=r["prior"],posterior=r.get("posterior"),
                     final_action=r["final_action"],time=r["total_time_to_M_s"],
@@ -69,7 +78,7 @@ def main():
             payload["continuations"][r["case"]] = {
                 route:dict(Counter(np.where(data[route+"_success"],"success",data[route+"_category"])))
                 for route in ("door","bypass")}
-    save_json(output/"recovery_audit.json",payload)
+    save_json(output/(args.name+".json"),payload)
     rows = ["# Recovery control comparison", "", f"Old: `{old_output}`",f"New: `{output}`", "",
             "| Outcome | Before | After |","| --- | ---: | ---: |"]
     rows += [f"| {k} | {v['before']} | {v['after']} |" for k,v in distributions.items()]
@@ -81,7 +90,7 @@ def main():
     for r in results:
         p = r.get("posterior",r["prior"])
         rows.append(f"| {r['case']} | {r['prior']['p_D']:.9f} | {r['prior']['D']:.9f} | {r['prior']['action']} | {p['p_D']:.9f} | {p['D']:.9f} | {r['final_action']} | {r['total_time_to_M_s']:.3f} |")
-    (output/"recovery_audit.md").write_text("\n".join(rows)+"\n",encoding="utf-8")
+    (output/(args.name+".md")).write_text("\n".join(rows)+"\n",encoding="utf-8")
     print(json.dumps(payload,ensure_ascii=False,default=lambda x:x.tolist() if isinstance(x,np.ndarray) else str(x),indent=2))
 
 
