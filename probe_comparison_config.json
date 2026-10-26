@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "base_config": "experiment_config.json",
+  "random_seed": 0,
+  "maximum_probe_time_s": 1.2,
+  "sample_interval_s": 0.05,
+  "D_clear": 0.36,
+  "persistence_frames": 4,
+  "credible_mass": 0.9,
+  "broad_posterior_rms_ratio": 0.5,
+  "broad_posterior_marginal_sd_ratio": 0.5,
+  "baseline_atol": 1e-9,
+  "cases": ["A", "B", "C", "E"],
+  "probes": [
+    {"id": "probe_1p0N", "label": "1.0 N", "force_limit_N": 1.0, "standard": false},
+    {"id": "probe_1p4N", "label": "1.4 N", "force_limit_N": 1.4, "standard": false},
+    {"id": "probe_1p8N", "label": "1.8 N", "force_limit_N": 1.8, "standard": false},
+    {"id": "probe_standard_2p2N", "label": "2.2 N Standard", "force_limit_N": 2.2, "standard": true}
+  ]
+}
