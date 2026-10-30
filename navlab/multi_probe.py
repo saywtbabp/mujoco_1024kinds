@@ -117,9 +117,10 @@ def load_baseline(cfg):
     return data
 
 
-def initialize_output(output, settings, cfg, library):
+def initialize_output(output, settings, cfg, library, source_files=()):
     if output is None:
-        output = ROOT / "results" / ("probe_comparison_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        prefix = "force_profile_comparison_" if settings.get("study") == "force_profile" else "probe_comparison_"
+        output = ROOT / "results" / (prefix + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     output = Path(output).resolve()
     marker = output / "config_snapshot.json"
     if output.exists() and not marker.exists() and any(output.iterdir()):
@@ -132,6 +133,7 @@ def initialize_output(output, settings, cfg, library):
                     "navlab/multi_probe.py", "navlab/multi_probe_report.py", "navlab/multi_probe_replay.js",
                     "probe_comparison.py", "probe_comparison_config.json", "experiment_config.json",
                     "test_probe_comparison.py", "verify_probe_report.js", "verify_probe_report_browser.js", "PROBE_COMPARISON.md"]
+    source_names += list(source_files)
     source_names += [p.relative_to(ROOT).as_posix() for p in sorted((ROOT/"models"/cfg.model_source).rglob("*")) if p.is_file()]
     hashes = {name: hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in source_names}
     snapshot = dict(schema=1, settings=settings, base_config=asdict(cfg), cases=cases,

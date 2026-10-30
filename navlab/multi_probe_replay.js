@@ -58,6 +58,7 @@
     const name = panel.dataset.case, histories = data.cases[name];
     const baseline = histories[standard.id], truth = data.snapshot.cases[name].theta;
     const selector = panel.querySelector('.probe-selector'), slider = panel.querySelector('.time-slider');
+    const referenceSelector = panel.querySelector('.reference-selector');
     const play = panel.querySelector('.play'), speed = panel.querySelector('.speed');
     const status = panel.querySelector('.replay-status');
     const left = scatter(panel.querySelector('.standard-scatter'), truth);
@@ -72,26 +73,40 @@
       }
       if(history.later_relapse) clear += ' · 后续存在反复';
       target.innerHTML = `p_D=<b>${fmt(m.p_D,6)}</b> · D=<b>${fmt(m.D,6)}</b> · <b>${m.judgment}</b><br>` +
-        `ESS=${fmt(m.ESS,1)} · PCA angle=${fmt(m.geometry.angle_deg,2)}° · width/prior=${fmt(m.normalized_rms_ratio,3)}<br>${clear}`;
+        `ESS=${fmt(m.ESS,1)} · normalized PCA=${fmt(m.normalized_geometry.angle_deg,2)}° · physical PCA=${fmt(m.geometry.angle_deg,2)}° · width/prior=${fmt(m.normalized_rms_ratio,3)}<br>${clear}`;
+      if(history.command_force_limits) target.innerHTML += `<br>当前指令上限=${fmt(history.command_force_limits[i],2)} N · 已用 command-force budget=${fmt(history.command_budgets_sofar[i],3)} N·s`;
       target.dataset.p = String(m.p_D); target.dataset.d = String(m.D); target.dataset.time = String(history.times[i]);
       target.dataset.tClear = String(history.t_clear); target.dataset.ess = String(m.ESS);
+      target.dataset.angle = String(m.normalized_geometry.angle_deg);
     }
     function draw(i) {
       index = Math.max(0,Math.min(i,baseline.times.length-1)); slider.value = index;
       const chosen = histories[selector.value];
-      const maximum = Math.max(...baseline.weights[index], ...chosen.weights[index]);
-      left(baseline,index,maximum); right(chosen,index,maximum);
+      const reference = referenceSelector ? histories[referenceSelector.value] : baseline;
+      const maximum = Math.max(...reference.weights[index], ...chosen.weights[index]);
+      left(reference,index,maximum); right(chosen,index,maximum);
+      const referenceTitle = panel.querySelector('.reference-title');
+      if(referenceTitle) referenceTitle.textContent = 'Reference · '+reference.probe.label;
       panel.querySelector('.candidate-title').textContent = 'Candidate · '+chosen.probe.label;
-      metrics(panel.querySelector('.standard-metrics'),baseline,index);
+      metrics(panel.querySelector('.standard-metrics'),reference,index);
       metrics(panel.querySelector('.candidate-metrics'),chosen,index);
       status.textContent = `Case ${name} · ${chosen.probe.label} · t=${fmt(chosen.times[index],2)} s · ${index+1}/${chosen.times.length} 帧`;
       status.dataset.time = String(chosen.times[index]); status.dataset.probeId = chosen.probe_id;
+      status.dataset.referenceId = reference.probe_id;
+      const pair = panel.querySelector('.pair-metrics');
+      if(pair) {
+        const l1 = chosen.weights[index].reduce((sum,w,k) => sum+Math.abs(w-reference.weights[index][k]),0);
+        const delta = Math.abs(((chosen.metrics[index].normalized_geometry.angle_deg-reference.metrics[index].normalized_geometry.angle_deg+270)%180)-90);
+        pair.textContent = `当前两图权重 L1=${fmt(l1,6)} · D 差=${fmt(Math.abs(chosen.metrics[index].D-reference.metrics[index].D),6)} · 归一化主轴夹角=${fmt(delta,2)}°`;
+        pair.dataset.l1 = String(l1);
+      }
       for(const cursor of panel.querySelectorAll('.time-cursor')) {
         const x = Number(cursor.dataset.left) + chosen.times[index]/settings.maximum_probe_time_s*(Number(cursor.dataset.right)-Number(cursor.dataset.left));
         cursor.setAttribute('x1',x); cursor.setAttribute('x2',x);
       }
     }
     selector.addEventListener('change', () => { stop(); draw(index); });
+    if(referenceSelector) referenceSelector.addEventListener('change', () => { stop(); draw(index); });
     slider.addEventListener('input', () => { stop(); draw(Number(slider.value)); });
     panel.querySelector('.first').addEventListener('click', () => { stop(); draw(0); });
     panel.querySelector('.last').addEventListener('click', () => { stop(); draw(baseline.times.length-1); });

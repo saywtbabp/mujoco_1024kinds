@@ -28,7 +28,7 @@ def load_saved(output):
     return data
 
 
-def validate_saved(output):
+def validate_saved(output, summary_name="probe_summary"):
     """Recompute saved results from actual/predicted responses, including all CSVs."""
     output = Path(output)
     data = load_saved(output)
@@ -81,8 +81,8 @@ def validate_saved(output):
             total_frames += len(rows)
     for case in settings["cases"]:
         summaries += [data["cases"][case][p["id"]]["summary"] for p in settings["probes"]]
-    assert summaries == read_json(output/"probe_summary.json")
-    with (output/"probe_summary.csv").open(encoding="utf-8-sig") as f:
+    assert summaries == read_json(output/(summary_name+".json"))
+    with (output/(summary_name+".csv")).open(encoding="utf-8-sig") as f:
         saved_summary = list(csv.DictReader(f))
     for row, summary in zip(saved_summary, summaries):
         for key, value in summary.items():

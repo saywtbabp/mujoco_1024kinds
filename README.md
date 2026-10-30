@@ -1,5 +1,27 @@
 # 1024 个物理候选世界的主动交互导航验证
 
+## Git 归档范围
+
+本仓库保留原有五次提交的名称、顺序、作者和时间，保留全部已提交研究代码、实验配置、测试与验证脚本、HTML/JavaScript 报告源码、文档以及 `models/` 中三份原无人机 XML。`.gitattributes` 固定源码和既有文档的换行格式，避免检出时改变候选库签名。
+
+历史提交中的 `.idea/`、`render_preview.py` 导出的 `scene.xml` 与 `scene_preview.png` 已取消跟踪；原目录中的这些文件仍保留。新检出环境需自行选择 Python 解释器并配置 PyCharm，生成预览请运行 `render_preview.py`，实际仿真仍从 `models/` 和 `navlab/physics.py` 构建场景。
+
+`results/` 从未进入这五次提交，继续忽略；其中的候选库、continuation、实验轨迹、截图和报告只保存在本地。新检出版本可通过 `build_library.py`、`build_probe_stream.py` 和相应实验入口重建输出；下文的历史结果链接需要已有输出才能打开。
+
+验证脚本和报告生成代码是可复用的研究成果，继续归档；它们生成的测试记录、日志、缓存和临时文件不归档。尚未提交的接触位置实验文件保持原来的本地未提交状态，未混入任何历史提交。
+
+## Force Profile 对比实验
+
+新增五种预定义力时间结构：Standard 2.2 N、Constant 1.6 N、Low→High、High→Low、Pulse→Hold。后四种完整 command-force budget 均为 1.92 N·s；Standard 为 2.64 N·s。沿用原 1024 候选、标签、likelihood、D 阈值和连续帧确认逻辑。
+
+```powershell
+& 'G:/anaconda3/envs/mujoco/python.exe' build_probe_stream.py --profiles --output results/force_profile_comparison_my_run
+& 'G:/anaconda3/envs/mujoco/python.exe' force_profile_comparison.py --output results/force_profile_comparison_my_run
+& 'G:/anaconda3/envs/mujoco/python.exe' force_profile_comparison.py --report-only --output results/force_profile_comparison_my_run
+```
+
+完整定义、缓存、验证和交互报告说明见 [FORCE_PROFILE_COMPARISON.md](FORCE_PROFILE_COMPARISON.md)。上一轮恒定 magnitude 实验见 [PROBE_COMPARISON.md](PROBE_COMPARISON.md)。两种实验和原导航任务使用独立输出，旧结果保留。
+
 ## 在 PyCharm 中运行
 
 1. 打开整个 `mujoco_1024kinds` 文件夹。

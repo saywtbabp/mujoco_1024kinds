@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "study": "force_profile",
+  "base_config": "experiment_config.json",
+  "random_seed": 0,
+  "maximum_probe_time_s": 1.2,
+  "sample_interval_s": 0.05,
+  "D_clear": 0.36,
+  "persistence_frames": 4,
+  "credible_mass": 0.9,
+  "broad_posterior_rms_ratio": 0.5,
+  "broad_posterior_marginal_sd_ratio": 0.5,
+  "baseline_atol": 1e-9,
+  "matched_budget_Ns": 1.92,
+  "near_standard_clear_tolerance_s": 0.10,
+  "direction_min_ESS": 5.0,
+  "direction_min_anisotropy": 2.0,
+  "direction_change_report_deg": 10.0,
+  "cases": ["A", "B", "C", "E"],
+  "profiles": [
+    {"id": "standard_2p2N", "label": "2.2 N Standard", "duration_s": 1.2, "command_force_budget_Ns": 2.64, "standard": true, "matched_budget": false,
+     "segments": [{"start_s": 0.0, "end_s": 1.2, "force_limit_N": 2.2}]},
+    {"id": "constant_1p6N", "label": "Constant 1.6 N", "duration_s": 1.2, "command_force_budget_Ns": 1.92, "standard": false, "matched_budget": true,
+     "segments": [{"start_s": 0.0, "end_s": 1.2, "force_limit_N": 1.6}]},
+    {"id": "low_to_high_1p0_2p2", "label": "Low → High 1.0→2.2 N", "duration_s": 1.2, "command_force_budget_Ns": 1.92, "standard": false, "matched_budget": true,
+     "segments": [{"start_s": 0.0, "end_s": 0.6, "force_limit_N": 1.0}, {"start_s": 0.6, "end_s": 1.2, "force_limit_N": 2.2}]},
+    {"id": "high_to_low_2p2_1p0", "label": "High → Low 2.2→1.0 N", "duration_s": 1.2, "command_force_budget_Ns": 1.92, "standard": false, "matched_budget": true,
+     "segments": [{"start_s": 0.0, "end_s": 0.6, "force_limit_N": 2.2}, {"start_s": 0.6, "end_s": 1.2, "force_limit_N": 1.0}]},
+    {"id": "pulse_hold_2p2_1p48", "label": "Pulse → Hold 2.2→1.48 N", "duration_s": 1.2, "command_force_budget_Ns": 1.92, "standard": false, "matched_budget": true,
+     "segments": [{"start_s": 0.0, "end_s": 0.2, "force_limit_N": 2.2}, {"start_s": 0.2, "end_s": 1.2, "force_limit_N": 1.48}]}
+  ]
+}
